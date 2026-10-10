@@ -40,7 +40,7 @@
     dpr = Math.min(window.devicePixelRatio || 1, 2);
     W = window.innerWidth; H = window.innerHeight;
     canvas.width = W * dpr; canvas.height = H * dpr;
-    base = H / 750;
+    base = H / 1300;
   }
   window.addEventListener('resize', resize);
   resize();
@@ -61,6 +61,7 @@
       this.zigPhase = rand(0, 6.28);
       this.heading = -Math.PI / 2;
       this.vx = 0; this.vy = 0;
+      this.startup = anywhere;
       this.place(others, anywhere);
       this.feet = [];
       for (let side = 0; side < 2; side++)
@@ -70,16 +71,19 @@
     // Pick a free spot: anywhere on screen at start, below the screen later.
     place(others, anywhere) {
       const margin = 90 * this.S;
-      let best = null, bestGap = -1;
-      for (let i = 0; i < 40; i++) {
+      let found = null;
+      for (let i = 0; i < 60 && !found; i++) {
         const x = rand(margin, Math.max(margin + 1, W - margin));
         const y = anywhere ? rand(0, H) : H + 110 * this.S + rand(0, 60);
-        let gap = Infinity;
-        for (const o of others) if (o !== this) gap = Math.min(gap, Math.hypot(o.x - x, o.y - y) - 60 * (this.S + o.S));
-        if (gap > bestGap) { bestGap = gap; best = [x, y]; }
-        if (gap > 0) break;
+        let free = true;
+        for (const o of others) if (o !== this && !o.waiting && Math.hypot(o.x - x, o.y - y) < 120 * (this.S + o.S)) free = false;
+        if (free) found = [x, y];
       }
-      this.x = best[0]; this.y = best[1];
+      // No free spot: wait out of sight and try again soon.
+      this.waiting = !found;
+      this.retry = 0.3;
+      if (found) { this.x = found[0]; this.y = found[1]; }
+      else { this.x = W / 2; this.y = H + 1000; }
       this.heading = -Math.PI / 2;
       if (this.feet) for (const f of this.feet) { f.init = false; f.stepping = false; }
     }
@@ -89,8 +93,13 @@
       // Look ahead so feet land where the body is going.
       return [this.x + c * lx - s * ly + this.vx * 0.18, this.y + s * lx + c * ly + this.vy * 0.18];
     }
-    update(dt, time, others) {
+    update(dt, time, others, bats) {
       const S = this.S;
+      if (this.waiting) {
+        this.retry -= dt;
+        if (this.retry <= 0) this.place(others, this.startup);
+        return;
+      }
       // Zigzag: the swing speed and the speed along the path both drift a little.
       this.zigPhase += dt * this.zigFreq * 2 * Math.PI * (1 + 0.4 * Math.sin(time * 0.7 + this.seed));
       const zig = Math.tanh(2.2 * Math.sin(this.zigPhase)) * this.zigAmp + 0.15 * Math.sin(time * 2.3 + this.seed * 3);
@@ -99,7 +108,12 @@
       for (const o of others) {
         if (o === this) continue;
         const ox = this.x - o.x, oy = this.y - o.y;
-        const d = Math.hypot(ox, oy) || 1, R = 80 * (S + o.S);
+        const d = Math.hypot(ox, oy) || 1, R = 160 * (S + o.S);
+        if (d < R) { const w = (1 - d / R) * 3; dx += ox / d * w; dy += oy / d * w; }
+      }
+      for (const b of bats) {
+        const ox = this.x - b.x, oy = this.y - b.y;
+        const d = Math.hypot(ox, oy) || 1, R = 110 * S + 70 * b.S;
         if (d < R) { const w = (1 - d / R) * 3; dx += ox / d * w; dy += oy / d * w; }
       }
       // Stay on screen sideways.
@@ -118,10 +132,15 @@
       for (const o of others) {
         if (o === this) continue;
         const ox = this.x - o.x, oy = this.y - o.y;
-        const d = Math.hypot(ox, oy) || 1, minD = 55 * (S + o.S);
-        if (d < minD) { const p = (minD - d) / 2; this.x += ox / d * p; this.y += oy / d * p; o.x -= ox / d * p; o.y -= oy / d * p; }
+        const d = Math.hypot(ox, oy) || 1, minD = 90 * (S + o.S);
+        if (!o.waiting && d < minD) { const p = (minD - d) / 2; this.x += ox / d * p; this.y += oy / d * p; o.x -= ox / d * p; o.y -= oy / d * p; }
       }
-      if (this.y < -110 * S) this.place(others, false);   // left the top: come back from the bottom
+      for (const b of bats) {
+        const ox = this.x - b.x, oy = this.y - b.y;
+        const d = Math.hypot(ox, oy) || 1, minD = 90 * S + 50 * b.S;
+        if (d < minD) { this.x += ox / d * (minD - d); this.y += oy / d * (minD - d); }
+      }
+      if (this.y < -110 * S) { this.startup = false; this.place(others, false); }   // left the top: come back from the bottom
       this.stepFeet(dt);
     }
     stepFeet(dt) {
@@ -151,6 +170,7 @@
       }
     }
     draw(color) {
+      if (this.waiting) return;
       const S = this.S;
       ctx.save();
       ctx.translate(this.x, this.y);
@@ -253,7 +273,7 @@
     const color = BRIGHTNESS[level];
     for (const b of bats) { b.update(dt); b.draw(color); }
     bats = bats.filter(b => !b.dead);
-    for (const sp of spiders) { sp.update(dt, time, spiders); sp.draw(color); }
+    for (const sp of spiders) { sp.update(dt, time, spiders, bats); sp.draw(color); }
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
